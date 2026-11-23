@@ -43,13 +43,17 @@ cmake --build build -j$(nproc)
 
 ```text
 fisterm/
-├── src/
-├── include/
 ├── CMakeLists.txt
+├── plscompCMake
+├── plscompWINDOWS
 ├── README.md
-└── REQUIREMENT.md
+├── REQUIREMENT.md
+└── src
+    ├── main.cpp
+    ├── PTY.cpp
+    ├── PTY.hpp
+    ├── Renderer.cpp
+    ├── Renderer.hpp
+    ├── Terminal.cpp
+    └── Terminal.hpp
 ```
-
-## license
-
-[add your chosen license here]
