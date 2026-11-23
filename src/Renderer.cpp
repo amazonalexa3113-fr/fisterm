@@ -87,8 +87,10 @@ void Renderer::Render(Terminal& terminal)
             const int y = padding + row * cellHeight;
             const int span = cell.width > 1 ? cell.width : 1;
             SDL_Rect cellRect{x, y, cellWidth * span, cellHeight};
-            const VTermColor& foregroundColor = cell.attrs.reverse ? cell.bg : cell.fg;
-            const VTermColor& backgroundColor = cell.attrs.reverse ? cell.fg : cell.bg;
+            // Selected text is drawn inverted (flips again if already reversed).
+            const bool inverted = (cell.attrs.reverse != 0) != terminal.IsSelected(row, column);
+            const VTermColor& foregroundColor = inverted ? cell.bg : cell.fg;
+            const VTermColor& backgroundColor = inverted ? cell.fg : cell.bg;
 
             SDL_Color background = ResolveColor(terminal, backgroundColor, false);
             SDL_SetRenderDrawColor(renderer, background.r, background.g,

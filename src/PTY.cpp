@@ -74,20 +74,27 @@ bool PTY::Write(const char* data, size_t size)
     if (masterFD < 0)
         return false;
 
-    size_t offset = 0;
+    pending.append(data, size);
+    return Flush();
+}
 
-    while (offset < size)
+bool PTY::Flush()
+{
+    if (masterFD < 0)
+        return false;
+
+    while (!pending.empty())
     {
-        ssize_t result = write(
-            masterFD,
-            data + offset,
-            size - offset
-        );
+        ssize_t result = write(masterFD, pending.data(), pending.size());
 
         if (result < 0)
         {
             if (errno == EINTR)
                 continue;
+
+            // Buffer full (big paste): keep the rest and retry next frame.
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return true;
 
             return false;
         }
@@ -95,7 +102,7 @@ bool PTY::Write(const char* data, size_t size)
         if (result == 0)
             return false;
 
-        offset += static_cast<size_t>(result);
+        pending.erase(0, static_cast<size_t>(result));
     }
 
     return true;
@@ -179,6 +186,8 @@ void PTY::Stop()
 
         childPID = -1;
     }
+
+    pending.clear();
 
     if (masterFD >= 0)
     {

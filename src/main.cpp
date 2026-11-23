@@ -33,6 +33,7 @@ struct App
 
     bool running = true;
     bool needRedraw = true;
+    bool selecting = false; // left button held, dragging a selection
 };
 
 std::string findSystemFont()
@@ -152,10 +153,41 @@ constexpr bool ALT_SENDS_ESC = false; // Option composes characters on macOS
 constexpr bool ALT_SENDS_ESC = true;
 #endif
 
+void cellAt(const App& app, int x, int y, int& row, int& column)
+{
+    row = std::clamp((y - PADDING) / app.cellHeight, 0, std::max(0, app.terminal.GetRows() - 1));
+    column = std::clamp((x - PADDING) / app.cellWidth, 0, std::max(0, app.terminal.GetColumns() - 1));
+    if (y < PADDING)
+        row = 0;
+    if (x < PADDING)
+        column = 0;
+}
+
+void copySelection(App& app)
+{
+    const std::string text = app.terminal.GetSelectedText();
+    if (!text.empty())
+        SDL_SetClipboardText(text.c_str());
+    app.terminal.ClearSelection();
+}
+
+void pasteClipboard(App& app)
+{
+    if (!SDL_HasClipboardText())
+        return;
+
+    if (char* text = SDL_GetClipboardText())
+    {
+        app.terminal.Paste(text);
+        SDL_free(text);
+    }
+}
+
 void handleKey(App& app, const SDL_KeyboardEvent& key)
 {
     const SDL_Keycode code = key.keysym.sym;
     const Uint16 mods = key.keysym.mod;
+    const bool ctrl = (mods & KMOD_CTRL) != 0;
 
     // Shift+PageUp/PageDown scroll the view instead of going to the program.
     if ((mods & KMOD_SHIFT) && (code == SDLK_PAGEUP || code == SDLK_PAGEDOWN))
@@ -165,15 +197,35 @@ void handleKey(App& app, const SDL_KeyboardEvent& key)
         return;
     }
 
+    // Copy: Ctrl+C with a selection (or Ctrl+Shift+C). Without a selection,
+    // plain Ctrl+C still falls through and sends ^C to the program.
+    if (ctrl && code == SDLK_c)
+    {
+        if (app.terminal.HasSelection())
+        {
+            copySelection(app);
+            return;
+        }
+        if (mods & KMOD_SHIFT)
+            return;
+    }
+
+    // Paste: Ctrl+V, Ctrl+Shift+V or Shift+Insert.
+    if ((ctrl && code == SDLK_v) || ((mods & KMOD_SHIFT) && code == SDLK_INSERT))
+    {
+        pasteClipboard(app);
+        return;
+    }
+
     VTermKey special;
     if (mapSpecialKey(code, special))
     {
+        app.terminal.ClearSelection();
         app.terminal.ScrollToBottom();
         app.terminal.KeyboardKey(special, toVTermMods(mods));
         return;
     }
 
-    const bool ctrl = mods & KMOD_CTRL;
     const bool alt = (mods & KMOD_ALT) && ALT_SENDS_ESC;
 
     if (ctrl || alt)
@@ -203,6 +255,7 @@ void handleKey(App& app, const SDL_KeyboardEvent& key)
             return;
         }
 
+        app.terminal.ClearSelection();
         app.terminal.ScrollToBottom();
         app.terminal.SendInput(bytes, length);
     }
@@ -226,6 +279,45 @@ void handleEvent(App& app, const SDL_Event& event)
             app.terminal.ScrollView(event.wheel.y * WHEEL_LINES);
             break;
 
+        case SDL_MOUSEBUTTONDOWN:
+        {
+            if (event.button.button != SDL_BUTTON_LEFT)
+                break;
+
+            int row = 0;
+            int column = 0;
+            cellAt(app, event.button.x, event.button.y, row, column);
+            app.selecting = true;
+            app.terminal.BeginSelection(row, column);
+            break;
+        }
+
+        case SDL_MOUSEMOTION:
+        {
+            if (!app.selecting || !(event.motion.state & SDL_BUTTON_LMASK))
+                break;
+
+            // Dragging past the top/bottom edge scrolls the history.
+            int width = 0;
+            int height = 0;
+            SDL_GetWindowSize(app.window, &width, &height);
+            if (event.motion.y < PADDING)
+                app.terminal.ScrollView(1);
+            else if (event.motion.y > height - PADDING)
+                app.terminal.ScrollView(-1);
+
+            int row = 0;
+            int column = 0;
+            cellAt(app, event.motion.x, event.motion.y, row, column);
+            app.terminal.UpdateSelection(row, column);
+            break;
+        }
+
+        case SDL_MOUSEBUTTONUP:
+            if (event.button.button == SDL_BUTTON_LEFT)
+                app.selecting = false;
+            break;
+
         case SDL_TEXTINPUT:
         {
             // Ctrl/Alt combos are already handled in handleKey.
@@ -233,6 +325,7 @@ void handleEvent(App& app, const SDL_Event& event)
             if ((mods & KMOD_CTRL) || ((mods & KMOD_ALT) && ALT_SENDS_ESC))
                 break;
 
+            app.terminal.ClearSelection();
             app.terminal.ScrollToBottom();
             app.terminal.SendInput(event.text.text, std::strlen(event.text.text));
             break;
@@ -358,6 +451,8 @@ int main()
                 break;
             app.terminal.ReceiveOutput(buffer, static_cast<size_t>(count));
         }
+
+        app.pty.Flush();
 
         if (!app.pty.IsRunning())
             app.running = false;

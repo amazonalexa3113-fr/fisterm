@@ -37,6 +37,17 @@ public:
     // Cell as currently visible, taking scrollback offset into account.
     bool GetViewCell(int row, int column, VTermScreenCell& cell) const;
 
+    // Mouse selection. Anchored to the content, so it survives scrolling.
+    void BeginSelection(int row, int column);
+    void UpdateSelection(int row, int column);
+    void ClearSelection();
+    bool HasSelection() const;
+    bool IsSelected(int row, int column) const;
+    std::string GetSelectedText() const;
+
+    // Paste text (uses bracketed paste if the running program asked for it).
+    void Paste(const std::string& text);
+
     bool ConvertColorToRGB(VTermColor color, std::uint8_t& red,
                            std::uint8_t& green, std::uint8_t& blue) const;
     void GetCursor(int& row, int& column) const;
@@ -63,6 +74,17 @@ private:
     static int PushLine(int cols, const VTermScreenCell* cells, void* user);
     static int PopLine(int cols, VTermScreenCell* cells, void* user);
 
+    struct SelectionPoint
+    {
+        long line = 0; // 0 = oldest scrollback line, scrollback.size() = first live row
+        int column = 0;
+    };
+
+    static bool Before(const SelectionPoint& a, const SelectionPoint& b);
+    SelectionPoint ToAbsolute(int row, int column) const;
+    bool GetAbsoluteCell(long line, int column, VTermScreenCell& cell) const;
+    bool GetSelectionRange(SelectionPoint& start, SelectionPoint& end) const;
+
     VTerm* terminal = nullptr;
     VTermScreen* screen = nullptr;
     VTermState* state = nullptr;
@@ -79,4 +101,8 @@ private:
     bool damaged = false;
     bool cursorVisible = true;
     bool altScreen = false;
+
+    SelectionPoint selectionAnchor;
+    SelectionPoint selectionEnd;
+    bool selectionActive = false;
 };

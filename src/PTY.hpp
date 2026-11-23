@@ -21,6 +21,8 @@ public:
 
     ssize_t Read(char* buffer, size_t size);
     bool Write(const char* data, size_t size);
+    // Push out input that couldn't be written yet (the PTY is non-blocking).
+    bool Flush();
 
     void Resize(int columns, int rows);
 
@@ -33,4 +35,5 @@ public:
 private:
     int masterFD = -1;
     pid_t childPID = -1;
+    std::string pending;
 };

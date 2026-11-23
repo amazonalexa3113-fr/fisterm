@@ -15,6 +15,33 @@ VTermScreenCell BlankCell()
 }
 }
 
+namespace
+{
+void AppendUTF8(std::uint32_t codepoint, std::string& output)
+{
+    if (codepoint <= 0x7F)
+        output += static_cast<char>(codepoint);
+    else if (codepoint <= 0x7FF)
+    {
+        output += static_cast<char>(0xC0 | (codepoint >> 6));
+        output += static_cast<char>(0x80 | (codepoint & 0x3F));
+    }
+    else if (codepoint <= 0xFFFF)
+    {
+        output += static_cast<char>(0xE0 | (codepoint >> 12));
+        output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+        output += static_cast<char>(0x80 | (codepoint & 0x3F));
+    }
+    else
+    {
+        output += static_cast<char>(0xF0 | (codepoint >> 18));
+        output += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+        output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+        output += static_cast<char>(0x80 | (codepoint & 0x3F));
+    }
+}
+}
+
 Terminal::~Terminal()
 {
     Shutdown();
@@ -72,6 +99,7 @@ void Terminal::Shutdown()
     output = {};
     scrollback.clear();
     viewOffset = 0;
+    selectionActive = false;
     rows = 0;
     columns = 0;
     damaged = false;
@@ -215,6 +243,7 @@ void Terminal::Resize(int newRows, int newColumns)
         (newRows == rows && newColumns == columns))
         return;
 
+    selectionActive = false;
     rows = newRows;
     columns = newColumns;
     vterm_set_size(terminal, rows, columns);
@@ -222,6 +251,178 @@ void Terminal::Resize(int newRows, int newColumns)
 
     viewOffset = std::clamp(viewOffset, 0, static_cast<int>(scrollback.size()));
     damaged = true;
+}
+
+bool Terminal::Before(const SelectionPoint& a, const SelectionPoint& b)
+{
+    return a.line < b.line || (a.line == b.line && a.column < b.column);
+}
+
+Terminal::SelectionPoint Terminal::ToAbsolute(int row, int column) const
+{
+    row = std::clamp(row, 0, std::max(0, rows - 1));
+    column = std::clamp(column, 0, std::max(0, columns - 1));
+    return SelectionPoint{
+        static_cast<long>(scrollback.size()) + row - viewOffset,
+        column,
+    };
+}
+
+bool Terminal::GetAbsoluteCell(long line, int column, VTermScreenCell& cell) const
+{
+    if (line < 0 || column < 0 || column >= columns)
+        return false;
+
+    const long history = static_cast<long>(scrollback.size());
+    if (line >= history)
+        return GetCell(static_cast<int>(line - history), column, cell);
+
+    const auto& cells = scrollback[static_cast<std::size_t>(line)];
+    cell = column < static_cast<int>(cells.size()) ? cells[column] : BlankCell();
+    return true;
+}
+
+bool Terminal::GetSelectionRange(SelectionPoint& start, SelectionPoint& end) const
+{
+    if (!selectionActive)
+        return false;
+
+    start = selectionAnchor;
+    end = selectionEnd;
+    if (Before(end, start))
+        std::swap(start, end);
+    return true;
+}
+
+void Terminal::BeginSelection(int row, int column)
+{
+    if (selectionActive)
+        damaged = true;
+    selectionActive = false;
+    selectionAnchor = ToAbsolute(row, column);
+    selectionEnd = selectionAnchor;
+}
+
+void Terminal::UpdateSelection(int row, int column)
+{
+    const SelectionPoint point = ToAbsolute(row, column);
+
+    // A plain click (no movement) is not a selection.
+    if (!selectionActive && point.line == selectionAnchor.line &&
+        point.column == selectionAnchor.column)
+        return;
+
+    if (!selectionActive || point.line != selectionEnd.line ||
+        point.column != selectionEnd.column)
+        damaged = true;
+
+    selectionEnd = point;
+    selectionActive = true;
+}
+
+void Terminal::ClearSelection()
+{
+    if (selectionActive)
+        damaged = true;
+    selectionActive = false;
+}
+
+bool Terminal::HasSelection() const
+{
+    return selectionActive;
+}
+
+bool Terminal::IsSelected(int row, int column) const
+{
+    SelectionPoint start;
+    SelectionPoint end;
+    if (!GetSelectionRange(start, end))
+        return false;
+
+    const SelectionPoint point = ToAbsolute(row, column);
+    return !Before(point, start) && !Before(end, point);
+}
+
+std::string Terminal::GetSelectedText() const
+{
+    SelectionPoint start;
+    SelectionPoint end;
+    if (!GetSelectionRange(start, end))
+        return {};
+
+    std::string text;
+    for (long line = start.line; line <= end.line; ++line)
+    {
+        const int first = line == start.line ? start.column : 0;
+        const int last = line == end.line ? end.column : columns - 1;
+
+        std::string lineText;
+        for (int column = first; column <= last; ++column)
+        {
+            VTermScreenCell cell{};
+            if (!GetAbsoluteCell(line, column, cell))
+                break;
+
+            // Right half of a double-width character.
+            if (cell.chars[0] == static_cast<std::uint32_t>(-1))
+                continue;
+
+            if (cell.chars[0] == 0)
+            {
+                lineText += ' ';
+                continue;
+            }
+
+            for (std::uint32_t character : cell.chars)
+            {
+                if (character == 0)
+                    break;
+                AppendUTF8(character, lineText);
+            }
+        }
+
+        while (!lineText.empty() && lineText.back() == ' ')
+            lineText.pop_back();
+
+        text += lineText;
+        if (line != end.line)
+            text += '\n';
+    }
+    return text;
+}
+
+void Terminal::Paste(const std::string& text)
+{
+    if (!terminal || text.empty())
+        return;
+
+    // Terminals want CR for Enter. Also drop ESC so pasted text can't
+    // smuggle in escape sequences (e.g. a fake end-of-paste marker).
+    std::string cleaned;
+    cleaned.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        const char c = text[i];
+        if (c == '\033')
+            continue;
+        if (c == '\r')
+        {
+            cleaned += '\r';
+            if (i + 1 < text.size() && text[i + 1] == '\n')
+                ++i;
+        }
+        else if (c == '\n')
+            cleaned += '\r';
+        else
+            cleaned += c;
+    }
+
+    ScrollToBottom();
+    ClearSelection();
+
+    vterm_keyboard_start_paste(terminal);
+    SendInput(cleaned.data(), cleaned.size());
+    vterm_keyboard_end_paste(terminal);
 }
 
 void Terminal::Output(const char* data, std::size_t size, void* user)
@@ -273,6 +474,7 @@ int Terminal::SetTermProperty(VTermProp property, VTermValue* value, void* user)
 
         case VTERM_PROP_ALTSCREEN:
             self->altScreen = value->boolean != 0;
+            self->selectionActive = false;
             self->viewOffset = 0;
             self->damaged = true;
             return 1;
@@ -290,7 +492,12 @@ int Terminal::PushLine(int cols, const VTermScreenCell* cells, void* user)
     self->scrollback.emplace_back(cells, cells + cols);
 
     if (self->scrollback.size() > MAX_SCROLLBACK)
+    {
         self->scrollback.pop_front();
+        // Everything shifted down by one; keep the selection on the same text.
+        self->selectionAnchor.line = std::max(0L, self->selectionAnchor.line - 1);
+        self->selectionEnd.line = std::max(0L, self->selectionEnd.line - 1);
+    }
 
     // Keep the view pinned on the same content while scrolled up.
     if (self->viewOffset > 0)
