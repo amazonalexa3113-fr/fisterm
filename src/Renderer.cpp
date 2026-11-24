@@ -1,5 +1,6 @@
 #include "Renderer.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace
@@ -129,6 +130,19 @@ void Renderer::Render(Terminal& terminal)
                 if (cell.attrs.underline == VTERM_UNDERLINE_DOUBLE)
                     SDL_RenderDrawLine(renderer, x, underlineY - 2,
                                        x + cellWidth * span - 1, underlineY - 2);
+                if (cell.attrs.underline == VTERM_UNDERLINE_CURLY)
+                    for (int dx = 0; dx < cellWidth * span; dx += 4)
+                        SDL_RenderDrawLine(renderer, x + dx, underlineY - (dx / 2 % 2),
+                                           std::min(x + dx + 2, x + cellWidth * span - 1),
+                                           underlineY - ((dx + 2) / 2 % 2));
+            }
+            if (cell.attrs.strike)
+            {
+                SDL_Color foreground = ResolveColor(terminal, foregroundColor, true);
+                SDL_SetRenderDrawColor(renderer, foreground.r, foreground.g,
+                                       foreground.b, foreground.a);
+                SDL_RenderDrawLine(renderer, x, y + cellHeight / 2,
+                                   x + cellWidth * span - 1, y + cellHeight / 2);
             }
         }
     }
@@ -137,15 +151,25 @@ void Renderer::Render(Terminal& terminal)
     int cursorColumn = 0;
     terminal.GetCursor(cursorRow, cursorColumn);
     cursorRow += terminal.GetViewOffset();
-    if (terminal.IsCursorVisible() && cursorRow >= 0 && cursorRow < terminal.GetRows())
+    const bool cursorBlinkVisible = !terminal.IsCursorBlinking() ||
+        ((SDL_GetTicks() / 500) % 2 == 0);
+    if (terminal.IsCursorVisible() && cursorBlinkVisible &&
+        cursorRow >= 0 && cursorRow < terminal.GetRows())
     {
         SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-        SDL_Rect cursorRect{
-            padding + cursorColumn * cellWidth,
-            padding + cursorRow * cellHeight + cellHeight - 2,
-            cellWidth,
-            2,
-        };
+        const int cursorX = padding + cursorColumn * cellWidth;
+        const int cursorY = padding + cursorRow * cellHeight;
+        SDL_Rect cursorRect{cursorX, cursorY, cellWidth, cellHeight};
+        if (terminal.GetCursorShape() == VTERM_PROP_CURSORSHAPE_UNDERLINE)
+        {
+            cursorRect.y += cellHeight - 2;
+            cursorRect.h = 2;
+        }
+        else if (terminal.GetCursorShape() == VTERM_PROP_CURSORSHAPE_BAR_LEFT)
+            cursorRect.w = 2;
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        if (terminal.GetCursorShape() == VTERM_PROP_CURSORSHAPE_BLOCK)
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 128);
         SDL_RenderFillRect(renderer, &cursorRect);
     }
     SDL_RenderPresent(renderer);
@@ -173,6 +197,7 @@ Renderer::Glyph* Renderer::GetGlyph(const VTermScreenCell& cell)
     GlyphKey key{};
     std::memcpy(key.chars.data(), cell.chars, sizeof(cell.chars));
     key.bold = cell.attrs.bold;
+    key.italic = cell.attrs.italic;
 
     auto found = glyphs.find(key);
     if (found != glyphs.end())
@@ -189,8 +214,10 @@ Renderer::Glyph* Renderer::GetGlyph(const VTermScreenCell& cell)
     *output = '\0';
 
     const int originalStyle = TTF_GetFontStyle(font);
-    TTF_SetFontStyle(font, key.bold ? originalStyle | TTF_STYLE_BOLD
-                                    : originalStyle & ~TTF_STYLE_BOLD);
+    int style = originalStyle & ~(TTF_STYLE_BOLD | TTF_STYLE_ITALIC);
+    if (key.bold) style |= TTF_STYLE_BOLD;
+    if (key.italic) style |= TTF_STYLE_ITALIC;
+    TTF_SetFontStyle(font, style);
     SDL_Surface* surface = TTF_RenderUTF8_Blended(
         font, utf8, SDL_Color{255, 255, 255, 255});
     TTF_SetFontStyle(font, originalStyle);
@@ -210,7 +237,7 @@ Renderer::Glyph* Renderer::GetGlyph(const VTermScreenCell& cell)
 
 std::size_t Renderer::GlyphKeyHash::operator()(const GlyphKey& key) const noexcept
 {
-    std::size_t hash = key.bold ? 1 : 0;
+    std::size_t hash = (key.bold ? 1 : 0) | (key.italic ? 2 : 0);
     for (std::uint32_t character : key.chars)
         hash ^= static_cast<std::size_t>(character) + 0x9e3779b9 +
                 (hash << 6) + (hash >> 2);

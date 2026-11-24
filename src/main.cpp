@@ -34,6 +34,8 @@ struct App
     bool running = true;
     bool needRedraw = true;
     bool selecting = false; // left button held, dragging a selection
+    bool mouseButtonReported = false;
+    Uint32 cursorBlinkPhase = 0;
 };
 
 std::string findSystemFont()
@@ -74,8 +76,11 @@ void updateSize(App& app)
     int columns = 0;
     int rows = 0;
     computeGrid(app, columns, rows);
-    app.terminal.Resize(rows, columns);
-    app.pty.Resize(columns, rows);
+    if (rows != app.terminal.GetRows() || columns != app.terminal.GetColumns())
+    {
+        app.terminal.Resize(rows, columns);
+        app.pty.Resize(columns, rows);
+    }
     app.needRedraw = true;
 }
 
@@ -143,6 +148,23 @@ bool mapSpecialKey(SDL_Keycode code, VTermKey& out)
         case SDLK_END:      out = VTERM_KEY_END; return true;
         case SDLK_PAGEUP:   out = VTERM_KEY_PAGEUP; return true;
         case SDLK_PAGEDOWN: out = VTERM_KEY_PAGEDOWN; return true;
+        case SDLK_KP_0: out = VTERM_KEY_KP_0; return true;
+        case SDLK_KP_1: out = VTERM_KEY_KP_1; return true;
+        case SDLK_KP_2: out = VTERM_KEY_KP_2; return true;
+        case SDLK_KP_3: out = VTERM_KEY_KP_3; return true;
+        case SDLK_KP_4: out = VTERM_KEY_KP_4; return true;
+        case SDLK_KP_5: out = VTERM_KEY_KP_5; return true;
+        case SDLK_KP_6: out = VTERM_KEY_KP_6; return true;
+        case SDLK_KP_7: out = VTERM_KEY_KP_7; return true;
+        case SDLK_KP_8: out = VTERM_KEY_KP_8; return true;
+        case SDLK_KP_9: out = VTERM_KEY_KP_9; return true;
+        case SDLK_KP_MULTIPLY: out = VTERM_KEY_KP_MULT; return true;
+        case SDLK_KP_PLUS: out = VTERM_KEY_KP_PLUS; return true;
+        case SDLK_KP_COMMA: out = VTERM_KEY_KP_COMMA; return true;
+        case SDLK_KP_MINUS: out = VTERM_KEY_KP_MINUS; return true;
+        case SDLK_KP_PERIOD: out = VTERM_KEY_KP_PERIOD; return true;
+        case SDLK_KP_DIVIDE: out = VTERM_KEY_KP_DIVIDE; return true;
+        case SDLK_KP_EQUALS: out = VTERM_KEY_KP_EQUAL; return true;
         default: return false;
     }
 }
@@ -228,27 +250,19 @@ void handleKey(App& app, const SDL_KeyboardEvent& key)
 
     const bool alt = (mods & KMOD_ALT) && ALT_SENDS_ESC;
 
-    if (ctrl || alt)
+    if (ctrl)
     {
         char bytes[2];
         std::size_t length = 0;
 
         if (alt)
             bytes[length++] = '\033';
-
         if (ctrl)
         {
             const int control = controlChar(code);
             if (control < 0)
                 return;
             bytes[length++] = static_cast<char>(control);
-        }
-        else if (code >= 0x20 && code < 0x7F)
-        {
-            char c = static_cast<char>(code);
-            if ((mods & KMOD_SHIFT) && c >= 'a' && c <= 'z')
-                c = static_cast<char>(c - 'a' + 'A');
-            bytes[length++] = c;
         }
         else
         {
@@ -276,11 +290,41 @@ void handleEvent(App& app, const SDL_Event& event)
             break;
 
         case SDL_MOUSEWHEEL:
-            app.terminal.ScrollView(event.wheel.y * WHEEL_LINES);
+            if (app.terminal.IsMouseReporting() && !(SDL_GetModState() & KMOD_SHIFT))
+            {
+                const int direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+                    ? -event.wheel.y : event.wheel.y;
+                const int button = direction > 0 ? 4 : 5;
+                int mouseX = 0, mouseY = 0, row = 0, column = 0;
+                SDL_GetMouseState(&mouseX, &mouseY);
+                cellAt(app, mouseX, mouseY, row, column);
+                app.terminal.MouseMove(row, column, toVTermMods(SDL_GetModState()));
+                for (int i = 0; i < std::abs(direction); ++i)
+                    app.terminal.MouseButton(button, true, toVTermMods(SDL_GetModState()));
+            }
+            else
+                app.terminal.ScrollView((event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+                    ? -event.wheel.y : event.wheel.y) * WHEEL_LINES);
             break;
 
         case SDL_MOUSEBUTTONDOWN:
         {
+            const Uint16 mods = SDL_GetModState();
+            if (app.terminal.IsMouseReporting() && !(mods & KMOD_SHIFT))
+            {
+                const int button = event.button.button == SDL_BUTTON_LEFT ? 1 :
+                    event.button.button == SDL_BUTTON_MIDDLE ? 2 :
+                    event.button.button == SDL_BUTTON_RIGHT ? 3 : 0;
+                if (button)
+                {
+                    int row, column;
+                    cellAt(app, event.button.x, event.button.y, row, column);
+                    app.terminal.MouseMove(row, column, toVTermMods(mods));
+                    app.terminal.MouseButton(button, true, toVTermMods(mods));
+                    app.mouseButtonReported = true;
+                    break;
+                }
+            }
             if (event.button.button != SDL_BUTTON_LEFT)
                 break;
 
@@ -294,6 +338,15 @@ void handleEvent(App& app, const SDL_Event& event)
 
         case SDL_MOUSEMOTION:
         {
+            if (app.terminal.IsMouseReporting() && !(SDL_GetModState() & KMOD_SHIFT) &&
+                !app.selecting)
+            {
+                int row, column;
+                cellAt(app, event.motion.x, event.motion.y, row, column);
+                app.terminal.MouseMove(row, column, toVTermMods(SDL_GetModState()));
+                if (!app.selecting)
+                    break;
+            }
             if (!app.selecting || !(event.motion.state & SDL_BUTTON_LMASK))
                 break;
 
@@ -314,20 +367,58 @@ void handleEvent(App& app, const SDL_Event& event)
         }
 
         case SDL_MOUSEBUTTONUP:
-            if (event.button.button == SDL_BUTTON_LEFT)
+        {
+            const Uint16 mods = SDL_GetModState();
+            if (app.mouseButtonReported)
+            {
+                const int button = event.button.button == SDL_BUTTON_LEFT ? 1 :
+                    event.button.button == SDL_BUTTON_MIDDLE ? 2 :
+                    event.button.button == SDL_BUTTON_RIGHT ? 3 : 0;
+                if (button)
+                {
+                    int row, column;
+                    cellAt(app, event.button.x, event.button.y, row, column);
+                    app.terminal.MouseMove(row, column, toVTermMods(mods));
+                    app.terminal.MouseButton(button, false, toVTermMods(mods));
+                }
+                app.mouseButtonReported = false;
+            }
+            else if (event.button.button == SDL_BUTTON_LEFT)
                 app.selecting = false;
             break;
+        }
 
         case SDL_TEXTINPUT:
         {
-            // Ctrl/Alt combos are already handled in handleKey.
+            // Control combinations are handled in handleKey; printable text arrives here.
             const Uint16 mods = SDL_GetModState();
-            if ((mods & KMOD_CTRL) || ((mods & KMOD_ALT) && ALT_SENDS_ESC))
+            if (mods & KMOD_CTRL)
                 break;
 
             app.terminal.ClearSelection();
             app.terminal.ScrollToBottom();
-            app.terminal.SendInput(event.text.text, std::strlen(event.text.text));
+            const auto* bytes = reinterpret_cast<const unsigned char*>(event.text.text);
+            const std::size_t length = std::strlen(event.text.text);
+            for (std::size_t i = 0; i < length;)
+            {
+                std::uint32_t codepoint = bytes[i++];
+                if ((codepoint & 0xE0) == 0xC0 && i < length)
+                    codepoint = ((codepoint & 0x1F) << 6) | (bytes[i++] & 0x3F);
+                else if ((codepoint & 0xF0) == 0xE0 && i + 1 < length)
+                {
+                    codepoint = ((codepoint & 0x0F) << 12) |
+                        ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
+                }
+                else if ((codepoint & 0xF8) == 0xF0 && i + 2 < length)
+                {
+                    codepoint = ((codepoint & 0x07) << 18) |
+                        ((bytes[i++] & 0x3F) << 12) |
+                        ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
+                }
+                app.terminal.KeyboardUnicode(codepoint,
+                    (mods & KMOD_ALT) && ALT_SENDS_ESC
+                        ? toVTermMods(mods) : VTERM_MOD_NONE);
+            }
             break;
         }
 
@@ -458,6 +549,16 @@ int main()
             app.running = false;
 
         updateTitle(app);
+
+        if (app.terminal.IsCursorBlinking())
+        {
+            const Uint32 phase = SDL_GetTicks() / 500;
+            if (phase != app.cursorBlinkPhase)
+            {
+                app.cursorBlinkPhase = phase;
+                app.needRedraw = true;
+            }
+        }
 
         if (app.needRedraw || app.terminal.HasDamage())
         {

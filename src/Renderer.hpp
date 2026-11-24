@@ -28,6 +28,7 @@ private:
     {
         std::array<std::uint32_t, VTERM_MAX_CHARS_PER_CELL> chars{};
         bool bold = false;
+        bool italic = false;
 
         bool operator==(const GlyphKey&) const = default;
     };

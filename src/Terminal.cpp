@@ -126,6 +126,29 @@ void Terminal::KeyboardKey(VTermKey key, VTermModifier mod)
         vterm_keyboard_key(terminal, key, mod);
 }
 
+void Terminal::KeyboardUnicode(std::uint32_t codepoint, VTermModifier mod)
+{
+    if (terminal)
+        vterm_keyboard_unichar(terminal, codepoint, mod);
+}
+
+void Terminal::MouseMove(int row, int column, VTermModifier mod)
+{
+    if (terminal && mouseMode != VTERM_PROP_MOUSE_NONE)
+        vterm_mouse_move(terminal, row, column, mod);
+}
+
+void Terminal::MouseButton(int button, bool pressed, VTermModifier mod)
+{
+    if (terminal && mouseMode != VTERM_PROP_MOUSE_NONE)
+        vterm_mouse_button(terminal, button, pressed, mod);
+}
+
+bool Terminal::IsMouseReporting() const
+{
+    return mouseMode != VTERM_PROP_MOUSE_NONE;
+}
+
 bool Terminal::GetCell(int row, int column, VTermScreenCell& cell) const
 {
     return screen && row >= 0 && row < rows && column >= 0 && column < columns &&
@@ -183,6 +206,9 @@ bool Terminal::IsCursorVisible() const
 {
     return cursorVisible;
 }
+
+int Terminal::GetCursorShape() const { return cursorShape; }
+bool Terminal::IsCursorBlinking() const { return cursorBlink; }
 
 int Terminal::GetRows() const
 {
@@ -470,6 +496,20 @@ int Terminal::SetTermProperty(VTermProp property, VTermValue* value, void* user)
         case VTERM_PROP_CURSORVISIBLE:
             self->cursorVisible = value->boolean != 0;
             self->damaged = true;
+            return 1;
+
+        case VTERM_PROP_CURSORBLINK:
+            self->cursorBlink = value->boolean != 0;
+            self->damaged = true;
+            return 1;
+
+        case VTERM_PROP_CURSORSHAPE:
+            self->cursorShape = value->number;
+            self->damaged = true;
+            return 1;
+
+        case VTERM_PROP_MOUSE:
+            self->mouseMode = value->number;
             return 1;
 
         case VTERM_PROP_ALTSCREEN:

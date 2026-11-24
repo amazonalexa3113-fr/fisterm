@@ -31,6 +31,10 @@ public:
 
     // Keyboard via libvterm (handles application cursor mode, modifiers, etc.)
     void KeyboardKey(VTermKey key, VTermModifier mod);
+    void KeyboardUnicode(std::uint32_t codepoint, VTermModifier mod);
+    void MouseMove(int row, int column, VTermModifier mod);
+    void MouseButton(int button, bool pressed, VTermModifier mod);
+    bool IsMouseReporting() const;
 
     // Live screen cell (ignores scrollback).
     bool GetCell(int row, int column, VTermScreenCell& cell) const;
@@ -52,6 +56,8 @@ public:
                            std::uint8_t& green, std::uint8_t& blue) const;
     void GetCursor(int& row, int& column) const;
     bool IsCursorVisible() const;
+    int GetCursorShape() const;
+    bool IsCursorBlinking() const;
 
     int GetRows() const;
     int GetColumns() const;
@@ -100,6 +106,9 @@ private:
     int columns = 0;
     bool damaged = false;
     bool cursorVisible = true;
+    bool cursorBlink = false;
+    int cursorShape = VTERM_PROP_CURSORSHAPE_BLOCK;
+    int mouseMode = VTERM_PROP_MOUSE_NONE;
     bool altScreen = false;
 
     SelectionPoint selectionAnchor;
